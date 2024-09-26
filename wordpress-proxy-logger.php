@@ -2,16 +2,14 @@
 /**
  * Plugin Name: WordPress Proxy Logger
  * Description: Enables and logs HTTP forward proxy for WordPress cURL requests, with WP-CLI support for unattended configuration and dynamic log levels.
- * Version: 0.2
+ * Version: 0.3
  * Author: George Liu
  */
 
-// Ensure direct access to the plugin file is not allowed.
 if (!defined('ABSPATH')) {
     exit;
 }
 
-// Set available log levels.
 define('WORDPRESS_PROXY_LOGGER_LOG_LEVELS', ['DEBUG', 'INFO', 'ERROR']);
 
 /**
@@ -45,7 +43,7 @@ function wordpress_proxy_logger_define_constants() {
         }
     }
 }
-add_action('init', 'wordpress_proxy_logger_define_constants');
+add_action('plugins_loaded', 'wordpress_proxy_logger_define_constants');
 
 /**
  * Get the path where log files should be saved.
@@ -57,7 +55,7 @@ function wordpress_proxy_logger_get_log_path() {
 
     $log_dir = dirname($log_path);
     if (!file_exists($log_dir)) {
-        mkdir($log_dir, 0755, true);
+        mkdir($log_dir, 0700, true); // Use restrictive permissions
     }
 
     return $log_path;
@@ -74,6 +72,29 @@ function wordpress_proxy_logger_get_log_level() {
 }
 
 /**
+ * Get the configured maximum log file size.
+ *
+ * @return int|null The maximum log size in bytes or null if no limit is set.
+ */
+function wordpress_proxy_logger_get_max_log_size() {
+    $max_size = get_option('wordpress_proxy_log_max_size');
+    return !empty($max_size) ? absint($max_size) : null;
+}
+
+/**
+ * Rotate the log file if it exceeds the maximum allowed size.
+ *
+ * @param string $log_path The path to the log file.
+ */
+function wordpress_proxy_logger_rotate_log_file($log_path) {
+    $max_size = wordpress_proxy_logger_get_max_log_size();
+
+    if ($max_size && file_exists($log_path) && filesize($log_path) >= $max_size) {
+        rename($log_path, $log_path . '.' . time());
+    }
+}
+
+/**
  * Log messages based on the current log level.
  *
  * @param string $level The log level for this message ('DEBUG', 'INFO', 'ERROR').
@@ -85,8 +106,11 @@ function wordpress_proxy_logger_log($level, $message) {
     $message_priority = array_search($level, WORDPRESS_PROXY_LOGGER_LOG_LEVELS);
 
     if ($message_priority >= $log_priority) {
+        $log_path = wordpress_proxy_logger_get_log_path();
+        wordpress_proxy_logger_rotate_log_file($log_path); // Check for log rotation
+
         $log_message = sprintf("[%s] %s: %s\n", date('Y-m-d H:i:s'), $level, $message);
-        error_log($log_message, 3, wordpress_proxy_logger_get_log_path());
+        error_log($log_message, 3, $log_path);
     }
 }
 
@@ -110,7 +134,7 @@ function wordpress_proxy_logger_http_request_log($response, $type, $class, $args
 add_action('http_api_debug', 'wordpress_proxy_logger_http_request_log', 10, 5);
 
 /**
- * Register WP-CLI commands for configuring the proxy, log level, and log path.
+ * Register WP-CLI commands for configuring the proxy, log level, log path, and log size.
  */
 if (defined('WP_CLI') && WP_CLI) {
     class WordPress_Proxy_Logger_CLI {
@@ -191,11 +215,34 @@ if (defined('WP_CLI') && WP_CLI) {
 
             $log_dir = dirname($path);
             if (!file_exists($log_dir)) {
-                mkdir($log_dir, 0755, true);
+                mkdir($log_dir, 0700, true);
             }
 
             update_option('wordpress_proxy_log_path', $path);
             WP_CLI::success("Log path set to $path.");
+        }
+
+        /**
+         * Set the maximum log file size.
+         *
+         * ## OPTIONS
+         *
+         * <size>
+         * : The maximum log file size in bytes (e.g., 1048576 for 1MB).
+         *
+         * ## EXAMPLES
+         *
+         * wp wordpress-proxy-logger set-max-log-size 1048576
+         */
+        public function set_max_log_size($args) {
+            $size = absint($args[0]);
+
+            if ($size > 0) {
+                update_option('wordpress_proxy_log_max_size', $size);
+                WP_CLI::success("Max log size set to $size bytes.");
+            } else {
+                WP_CLI::error("Invalid size. Please enter a positive integer.");
+            }
         }
     }
 
@@ -233,6 +280,7 @@ function wordpress_proxy_logger_settings_html() {
         update_option('wordpress_proxy_pass', sanitize_text_field($_POST['wordpress_proxy_pass']));
         update_option('wordpress_proxy_log_level', strtoupper(sanitize_text_field($_POST['wordpress_proxy_log_level'])));
         update_option('wordpress_proxy_log_path', sanitize_text_field($_POST['wordpress_proxy_log_path']));
+        update_option('wordpress_proxy_log_max_size', absint($_POST['wordpress_proxy_log_max_size']));
 
         echo '<div class="updated"><p>Settings saved.</p></div>';
     }
@@ -243,6 +291,7 @@ function wordpress_proxy_logger_settings_html() {
     $proxy_pass = esc_attr(get_option('wordpress_proxy_pass'));
     $proxy_log_level = esc_attr(get_option('wordpress_proxy_log_level', 'INFO'));
     $proxy_log_path = esc_attr(get_option('wordpress_proxy_log_path', WP_CONTENT_DIR . '/logs/wordpress-proxy.log'));
+    $proxy_log_max_size = esc_attr(get_option('wordpress_proxy_log_max_size', ''));
 
     ?>
     <div class="wrap">
@@ -280,6 +329,10 @@ function wordpress_proxy_logger_settings_html() {
                     <th scope="row"><label for="wordpress_proxy_log_path">Log Path</label></th>
                     <td><input name="wordpress_proxy_log_path" type="text" id="wordpress_proxy_log_path" value="<?php echo $proxy_log_path; ?>" class="regular-text"></td>
                 </tr>
+                <tr>
+                    <th scope="row"><label for="wordpress_proxy_log_max_size">Max Log Size (bytes)</label></th>
+                    <td><input name="wordpress_proxy_log_max_size" type="number" id="wordpress_proxy_log_max_size" value="<?php echo $proxy_log_max_size; ?>" class="regular-text"></td>
+                </tr>
             </table>
             <?php submit_button(); ?>
         </form>
@@ -302,6 +355,7 @@ function wordpress_proxy_logger_register_settings() {
         }
     ]);
     register_setting('wordpress_proxy_logger_settings', 'wordpress_proxy_log_path', ['sanitize_callback' => 'sanitize_text_field']);
+    register_setting('wordpress_proxy_logger_settings', 'wordpress_proxy_log_max_size', ['sanitize_callback' => 'absint']);
 }
 add_action('admin_init', 'wordpress_proxy_logger_register_settings');
 

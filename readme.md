@@ -102,6 +102,20 @@ wp wordpress-proxy-logger set-log-path <path>
   wp wordpress-proxy-logger set-log-path /var/log/proxy.log
   ```
 
+#### Set Max Log Size
+
+To limit the maximum size of the log file in bytes:
+
+```bash
+wp wordpress-proxy-logger set-max-log-size <size>
+```
+
+**Example**:
+- Set max log size to 1MB (1,048,576 bytes):
+  ```bash
+  wp wordpress-proxy-logger set-max-log-size 1048576
+  ```
+
 ### Log File
 
 The log file will be saved at the specified path. By default, it is located at `wp-content/logs/proxy.log`.
