@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: WordPress Proxy Logger
- * Description: Enables and logs HTTP forward proxy for WordPress cURL requests, with WP-CLI support for unattended configuration and dynamic log levels.
- * Version: 0.4
+ * Description: Enables and logs HTTP forward proxy for WordPress cURL requests, with WP-CLI support for unattended configuration and dynamic log levels. Allows selective proxying based on user-defined domains.
+ * Version: 0.5
  * Author: George Liu
  */
 
@@ -37,6 +37,13 @@ if (!class_exists('WordPress_Proxy_Logger')) {
         private static $instance = null;
 
         /**
+         * List of domains or patterns to route through the proxy.
+         *
+         * @var array
+         */
+        private $proxy_domains = [];
+
+        /**
          * Get the singleton instance.
          *
          * @return WordPress_Proxy_Logger
@@ -57,6 +64,7 @@ if (!class_exists('WordPress_Proxy_Logger')) {
             add_action('http_api_debug', [$this, 'http_request_log'], 10, 5);
             add_action('admin_menu', [$this, 'settings_page']);
             add_action('admin_init', [$this, 'register_settings']);
+            add_filter('pre_http_send_through_proxy', [$this, 'filter_send_through_proxy'], 10, 2);
         }
 
         /**
@@ -92,6 +100,26 @@ if (!class_exists('WordPress_Proxy_Logger')) {
 
             // Set log priority once to avoid multiple checks in logging function.
             $this->log_priority = array_search($this->get_log_level(), WORDPRESS_PROXY_LOGGER_LOG_LEVELS);
+
+            // Load the proxy domains.
+            $this->load_proxy_domains();
+        }
+
+        /**
+         * Load the proxy domains from the options.
+         */
+        private function load_proxy_domains() {
+            $domains_option = get_option('wordpress_proxy_domains', '');
+            $domains_option = sanitize_textarea_field($domains_option);
+
+            if (!empty($domains_option)) {
+                $domains = explode("\n", $domains_option);
+                $domains = array_map('trim', $domains);
+                $domains = array_filter($domains);
+                $this->proxy_domains = $domains;
+            } else {
+                $this->proxy_domains = [];
+            }
         }
 
         /**
@@ -262,7 +290,7 @@ if (!class_exists('WordPress_Proxy_Logger')) {
          * @param string $password The plain text password.
          * @return string The encrypted password.
          */
-        private function encrypt_password($password) {
+        public function encrypt_password($password) {
             if (empty($password)) {
                 return '';
             }
@@ -282,6 +310,38 @@ if (!class_exists('WordPress_Proxy_Logger')) {
             }
             $key = wp_salt('auth');
             return openssl_decrypt(base64_decode($encrypted_password), 'AES-256-CBC', $key, 0, substr($key, 0, 16));
+        }
+
+        /**
+         * Filter whether to send the request through the proxy.
+         *
+         * @param bool $preempt Whether to send the request through the proxy.
+         * @param string $uri The request URI.
+         * @return bool
+         */
+        public function filter_send_through_proxy($preempt, $uri) {
+            // If no proxy domains are set, default to the existing behavior.
+            if (empty($this->proxy_domains)) {
+                return $preempt;
+            }
+
+            $use_proxy = false;
+            $parsed_url = parse_url($uri);
+            $host = isset($parsed_url['host']) ? $parsed_url['host'] : '';
+
+            foreach ($this->proxy_domains as $pattern) {
+                $pattern = trim($pattern);
+
+                // Convert wildcard patterns to regex.
+                $regex = '/' . str_replace('\*', '.*', preg_quote($pattern, '/')) . '/i';
+
+                if (preg_match($regex, $host)) {
+                    $use_proxy = true;
+                    break;
+                }
+            }
+
+            return $use_proxy;
         }
 
         /**
@@ -322,6 +382,13 @@ if (!class_exists('WordPress_Proxy_Logger')) {
                 update_option('wordpress_proxy_log_path', sanitize_text_field($_POST['wordpress_proxy_log_path']));
                 update_option('wordpress_proxy_log_max_size', absint($_POST['wordpress_proxy_log_max_size']));
 
+                // Update proxy domains
+                $domains = sanitize_textarea_field($_POST['wordpress_proxy_domains']);
+                update_option('wordpress_proxy_domains', $domains);
+
+                // Reload proxy domains
+                $this->load_proxy_domains();
+
                 echo '<div class="updated"><p>Settings saved.</p></div>';
             }
 
@@ -331,6 +398,7 @@ if (!class_exists('WordPress_Proxy_Logger')) {
             $proxy_log_level = esc_attr(get_option('wordpress_proxy_log_level', 'INFO'));
             $proxy_log_path = esc_attr(get_option('wordpress_proxy_log_path', WP_CONTENT_DIR . '/logs/wordpress-proxy.log'));
             $proxy_log_max_size = esc_attr(get_option('wordpress_proxy_log_max_size', ''));
+            $proxy_domains = esc_textarea(get_option('wordpress_proxy_domains', ''));
 
             ?>
             <div class="wrap">
@@ -375,6 +443,13 @@ if (!class_exists('WordPress_Proxy_Logger')) {
                             <th scope="row"><label for="wordpress_proxy_log_max_size">Max Log Size (bytes)</label></th>
                             <td><input name="wordpress_proxy_log_max_size" type="number" id="wordpress_proxy_log_max_size" value="<?php echo $proxy_log_max_size; ?>" class="regular-text"></td>
                         </tr>
+                        <tr>
+                            <th scope="row"><label for="wordpress_proxy_domains">Proxy Domains</label></th>
+                            <td>
+                                <textarea name="wordpress_proxy_domains" id="wordpress_proxy_domains" rows="5" class="large-text code"><?php echo $proxy_domains; ?></textarea>
+                                <p class="description">Enter one domain or pattern per line. Use '*' as a wildcard. For example: '*.wordpress.org'</p>
+                            </td>
+                        </tr>
                     </table>
                     <?php submit_button(); ?>
                 </form>
@@ -399,6 +474,7 @@ if (!class_exists('WordPress_Proxy_Logger')) {
             ]);
             register_setting('wordpress_proxy_logger_settings', 'wordpress_proxy_log_path', ['sanitize_callback' => 'sanitize_text_field']);
             register_setting('wordpress_proxy_logger_settings', 'wordpress_proxy_log_max_size', ['sanitize_callback' => 'absint']);
+            register_setting('wordpress_proxy_logger_settings', 'wordpress_proxy_domains', ['sanitize_callback' => 'sanitize_textarea_field']);
         }
     }
 
@@ -407,7 +483,7 @@ if (!class_exists('WordPress_Proxy_Logger')) {
 }
 
 /**
- * Register WP-CLI commands for configuring the proxy, log level, log path, and log size.
+ * Register WP-CLI commands for configuring the proxy, log level, log path, log size, and domains.
  */
 if (defined('WP_CLI') && WP_CLI && !class_exists('WordPress_Proxy_Logger_CLI')) {
     class WordPress_Proxy_Logger_CLI {
@@ -484,7 +560,7 @@ if (defined('WP_CLI') && WP_CLI && !class_exists('WordPress_Proxy_Logger_CLI')) 
          *
          * ## EXAMPLES
          *
-         * wp wordpress-proxy-logger set-log-path /var/log/proxy.log
+         * wp wordpress-proxy-logger set-log-path wp-content/logs/proxy.log
          */
         public function set_log_path($args) {
             $path = sanitize_text_field($args[0]);
@@ -544,6 +620,36 @@ if (defined('WP_CLI') && WP_CLI && !class_exists('WordPress_Proxy_Logger_CLI')) 
             } else {
                 WP_CLI::error("Invalid size. Please enter a positive integer.");
             }
+        }
+
+        /**
+         * Set the domains or patterns to route through the proxy.
+         *
+         * ## OPTIONS
+         *
+         * [<domains>...]
+         * : A list of domains or patterns. Use '*' as a wildcard.
+         *
+         * ## EXAMPLES
+         *
+         * wp wordpress-proxy-logger set-proxy-domains "*.wordpress.org" "api.example.com"
+         */
+        public function set_proxy_domains($args) {
+            if (empty($args)) {
+                WP_CLI::error("Please provide at least one domain or pattern.");
+                return;
+            }
+
+            $domains = array_map('sanitize_text_field', $args);
+            $domains_string = implode("\n", $domains);
+
+            update_option('wordpress_proxy_domains', $domains_string);
+
+            // Reload proxy domains in the logger instance
+            $logger = WordPress_Proxy_Logger::get_instance();
+            $logger->load_proxy_domains();
+
+            WP_CLI::success("Proxy domains updated successfully.");
         }
     }
 

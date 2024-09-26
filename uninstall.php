@@ -11,6 +11,7 @@ delete_option('wordpress_proxy_pass');
 delete_option('wordpress_proxy_log_level');
 delete_option('wordpress_proxy_log_path');
 delete_option('wordpress_proxy_log_max_size');
+delete_option('wordpress_proxy_domains');
 
 /**
  * Function to safely delete the plugin's log directory and its contents.
