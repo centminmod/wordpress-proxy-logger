@@ -13,6 +13,11 @@ if (!defined('ABSPATH')) {
 define('WORDPRESS_PROXY_LOGGER_LOG_LEVELS', ['DEBUG', 'INFO', 'ERROR']);
 
 /**
+ * Global variable to store the log priority level to avoid redundant checks.
+ */
+$log_priority = null;
+
+/**
  * Set the proxy constants based on options or fallbacks.
  * These constants will configure the WordPress HTTP API to use a proxy server.
  */
@@ -42,6 +47,10 @@ function wordpress_proxy_logger_define_constants() {
             define('WP_PROXY_PASSWORD', sanitize_text_field($proxy_pass));
         }
     }
+
+    // Set global log priority once to avoid multiple checks in logging function.
+    global $log_priority;
+    $log_priority = array_search(wordpress_proxy_logger_get_log_level(), WORDPRESS_PROXY_LOGGER_LOG_LEVELS);
 }
 add_action('plugins_loaded', 'wordpress_proxy_logger_define_constants');
 
@@ -101,8 +110,7 @@ function wordpress_proxy_logger_rotate_log_file($log_path) {
  * @param string $message The message to log.
  */
 function wordpress_proxy_logger_log($level, $message) {
-    $current_level = wordpress_proxy_logger_get_log_level();
-    $log_priority = array_search($current_level, WORDPRESS_PROXY_LOGGER_LOG_LEVELS);
+    global $log_priority; // Use the global variable set earlier
     $message_priority = array_search($level, WORDPRESS_PROXY_LOGGER_LOG_LEVELS);
 
     if ($message_priority >= $log_priority) {
